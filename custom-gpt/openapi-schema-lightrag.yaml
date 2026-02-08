@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: Internal Knowledge Navigator API (LightRAG)
+  description: |
+    LightRAG-powered retrieval system providing evidence-grounded answers using hybrid knowledge graph + vector search.
+    
+    **PRIMARY ENDPOINT: /retrieve** - Returns synthesized answers with citations (recommended, reliable, won't exceed size limits)
+    
+    **ADVANCED ENDPOINT: /retrieve/context-only** - Returns raw chunks (may fail with ResponseTooLargeError)
+  version: 2.0.0
+
+servers:
+  - url: https://elvie-unending-nonconjugally.ngrok-free.dev
+    description: API server via ngrok tunnel
+
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Check API health status
+      description: Returns the health status of the LightRAG API server
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  components:
+                    type: object
+                    properties:
+                      lightrag:
+                        type: boolean
+                  working_dir:
+                    type: string
+
+  /retrieve:
+    post:
+      operationId: retrieveAndAnswer
+      summary: Retrieve evidence and synthesize an answer (RECOMMENDED)
+      description: |
+        **This is the recommended primary endpoint for Custom GPT integration.**
+        
+        Uses LightRAG hybrid search to retrieve context and synthesize a grounded answer with references.
+        Returns a compact, ready-to-use answer that won't exceed response size limits.
+        
+        Supports naive, local, global, and hybrid modes (hybrid recommended).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: The user's question
+                  example: "What is the Internal Knowledge Navigator platform?"
+                mode:
+                  type: string
+                  description: Search mode to use
+                  enum: [naive, local, global, hybrid]
+                  default: hybrid
+                only_need_context:
+                  type: boolean
+                  description: If true, return only context without synthesis
+                  default: false
+      responses:
+        '200':
+          description: Answer synthesized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthesizedResponse'
+        '500':
+          description: Query processing error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+        '503':
+          description: LightRAG system not initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "LightRAG system not initialized"
+
+  /retrieve/context-only:
+    post:
+      operationId: retrieveContextOnly
+      summary: Retrieve raw evidence without LLM synthesis (ADVANCED - May cause ResponseTooLargeError)
+      description: |
+        **⚠️ WARNING: This endpoint may fail with ResponseTooLargeError for complex queries.**
+        **Use /retrieve endpoint instead for reliable results.**
+        
+        Returns ONLY retrieved context chunks without synthesis.
+        Chunks are automatically truncated to prevent response size issues.
+        
+        Maximum 5 chunks, 400 characters each by default.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: The user's question
+                mode:
+                  type: string
+                  description: Search mode to use
+                  enum: [naive, local, global, hybrid]
+                  default: hybrid
+                max_chunks:
+                  type: integer
+                  description: Maximum number of chunks to return (1-5, default 5)
+                  default: 5
+                  minimum: 1
+                  maximum: 5
+                max_chunk_size:
+                  type: integer
+                  description: Maximum characters per chunk (100-400, default 400)
+                  default: 400
+                  minimum: 100
+                  maximum: 400
+                only_need_context:
+                  type: boolean
+                  description: Always true for this endpoint
+                  default: false
+      responses:
+        '200':
+          description: Evidence chunks retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrievalResponse'
+        '500':
+          description: Query processing error
+        '503':
+          description: LightRAG system not initialized
+
+  /retrieve/simple:
+    get:
+      operationId: retrieveSimple
+      summary: Simplified GET endpoint for quick testing
+      description: |
+        Accepts GET requests and returns just the answer text. Useful for quick testing or lightweight integrations.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The user's question
+          example: "What is LightRAG?"
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [naive, local, global, hybrid]
+            default: hybrid
+          description: Search mode
+      responses:
+        '200':
+          description: Answer retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                    description: Original query
+                  answer:
+                    type: string
+                    description: Synthesized answer
+                  confidence:
+                    type: string
+                    description: Confidence level
+                    enum: [HIGH, MEDIUM, LOW]
+        '500':
+          description: Query processing error
+        '503':
+          description: LightRAG system not initialized
+
+components:
+  schemas:
+    SynthesizedResponse:
+      type: object
+      description: Full response with LLM synthesis - primary format for Custom GPT integration.
+      required:
+        - query
+        - mode
+        - answer
+        - evidence_used
+        - confidence
+      properties:
+        query:
+          type: string
+          description: Original user query
+          example: "What is the Internal Knowledge Navigator?"
+        mode:
+          type: string
+          description: Search mode used
+          enum: [naive, local, global, hybrid]
+          example: "hybrid"
+        answer:
+          type: string
+          description: |
+            LLM-synthesized answer grounded in retrieved evidence.
+            Includes references and citations in the format [1], [2], etc.
+          example: "A Multi-Agent Retrieval-Augmented Generation (MA-RAG) system is an advanced framework that employs a collaborative network of specialized AI agents [1, 2]. The system addresses limitations of traditional single-agent RAG by decomposing complex queries into structured steps and delegating subtasks to specialized agents that collaborate through chain-of-thought reasoning [1]."
+        evidence_used:
+          type: string
+          description: Brief description of evidence used for the answer
+          example: "Retrieved and synthesized using hybrid search mode. Evidence from 2 source(s): MA-RAG Multi-Agent Retrieval-Augmented Generation.pdf (page 1), Multi-Agent Systems.pdf (page 5)"
+        citations:
+          type: array
+          description: Detailed source citations with page numbers and locations
+          items:
+            $ref: '#/components/schemas/Citation'
+          example:
+            - document: "MA-RAG Multi-Agent Retrieval-Augmented Generation.pdf"
+              page: 1
+              location: "pages 1-58"
+              chunk_id: "ref-1"
+            - document: "A Collaborative Multi-Agent Approach.pdf"
+              page: 3
+              location: "Reference [2]"
+              chunk_id: "ref-2"
+        confidence:
+          type: string
+          description: Overall answer confidence level
+          enum: [HIGH, MEDIUM, LOW]
+          example: "HIGH"
+
+    RetrievalResponse:
+      type: object
+      description: Raw evidence without LLM synthesis - lets Custom GPT handle synthesis using evidence contract.
+      required:
+        - query
+        - mode
+        - evidence_chunks
+        - evidence_summary
+        - confidence
+      properties:
+        query:
+          type: string
+          description: Original user query
+        mode:
+          type: string
+          description: Search mode used
+          enum: [naive, local, global, hybrid]
+        evidence_chunks:
+          type: array
+          description: Retrieved evidence chunks
+          items:
+            $ref: '#/components/schemas/EvidenceChunk'
+        evidence_summary:
+          type: string
+          description: Brief summary of retrieval results
+          example: "Retrieved 5 evidence chunks using hybrid mode"
+        confidence:
+          type: string
+          description: Retrieval confidence level
+          enum: [HIGH, MEDIUM, LOW]
+
+    EvidenceChunk:
+      type: object
+      description: Single evidence chunk from retrieval
+      required:
+        - chunk_id
+        - text
+        - relevance
+      properties:
+        chunk_id:
+          type: string
+          description: Unique chunk identifier
+          example: "chunk_0"
+        text:
+          type: string
+          description: Chunk text content
+        relevance:
+          type: string
+          description: Relevance level
+          enum: [HIGH, MEDIUM, LOW]
+          example: "HIGH"
+        citation:
+          $ref: '#/components/schemas/Citation'
+          description: Source citation for this chunk (if available)
+
+    Citation:
+      type: object
+      description: Citation information for evidence source with page numbers and locations
+      required:
+        - document
+        - chunk_id
+      properties:
+        document:
+          type: string
+          description: Document name or title
+          example: "MA-RAG Multi-Agent Retrieval-Augmented Generation.pdf"
+        page:
+          type: integer
+          nullable: true
+          description: Page number where the information can be found (if available)
+          example: 1
+        location:
+          type: string
+          nullable: true
+          description: Specific location description (e.g., "pages 1-58", "section 3", "Reference [1]")
+          example: "pages 1-58"
+        chunk_id:
+          type: string
+          description: Internal chunk identifier for traceability
+          example: "ref-1"

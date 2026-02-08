@@ -127,19 +127,41 @@ class DocumentParser:
             include_page_breaks=True
         )
         
-        # Extract text
+        # Extract text with page number annotation
         text_parts = []
+        page_map = []  # Track which text belongs to which page
+        current_position = 0
+        
         for element in elements:
-            text_parts.append(str(element))
+            element_text = str(element)
+            if element_text.strip():
+                # Get page number from element metadata if available
+                page_num = None
+                if hasattr(element, 'metadata') and element.metadata:
+                    page_num = getattr(element.metadata, 'page_number', None)
+                
+                text_parts.append(element_text)
+                
+                # Track page mapping
+                page_map.append({
+                    "start": current_position,
+                    "end": current_position + len(element_text),
+                    "page": page_num,
+                    "element_type": type(element).__name__
+                })
+                
+                current_position += len(element_text) + 2  # +2 for \n\n
         
         text = "\n\n".join(text_parts)
         
-        # Create structured metadata
+        # Create structured metadata with page mapping
         metadata = {
             "parser": "unstructured",
             "num_elements": len(elements),
             "element_types": [type(el).__name__ for el in elements],
-            "has_tables": any("Table" in type(el).__name__ for el in elements)
+            "has_tables": any("Table" in type(el).__name__ for el in elements),
+            "page_map": page_map,  # NEW: Page number mapping
+            "total_pages": max([pm.get('page', 0) or 0 for pm in page_map], default=0)
         }
         
         return text, metadata

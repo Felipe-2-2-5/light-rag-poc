@@ -106,7 +106,17 @@ Neo4j will be available at:
 - Bolt: bolt://localhost:7687
 - Credentials: `neo4j` / `test`
 
-### 2. Install Python Dependencies
+### 2. Activate Virtual Environment
+
+**IMPORTANT**: Always activate the virtual environment before running any commands in this project:
+
+```bash
+source ~/.lightRAG_env/bin/activate
+```
+
+> 💡 **Tip**: Add this to your shell profile or run it at the start of each session to ensure all dependencies are available.
+
+### 3. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -127,7 +137,7 @@ pip install landingai
 export ADE_API_KEY="your_landing_ai_api_key"
 ```
 
-### 3. Run the Integrated Pipeline
+### 4. Run the Integrated Pipeline
 
 #### Quick Start: All-in-One Command
 

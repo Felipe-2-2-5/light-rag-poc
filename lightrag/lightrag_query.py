@@ -48,6 +48,7 @@ def setup_llm_functions():
             )
         
         gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+        gemini_embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
         
         async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             return await gemini_model_complete(
@@ -64,8 +65,13 @@ def setup_llm_functions():
             max_token_size=2048,
         )
         async def embedding_func(texts: list[str]) -> np.ndarray:
+            # Use .func to bypass gemini_embed's decorator (which has embedding_dim=1536)
+            # and apply our own wrapper with embedding_dim=768
             return await gemini_embed.func(
-                texts, api_key=GEMINI_API_KEY, model="models/text-embedding-004"
+                texts, 
+                api_key=GEMINI_API_KEY, 
+                model=gemini_embedding_model,
+                embedding_dim=768  # Explicitly set to 768 for compatibility
             )
         
         return llm_model_func, embedding_func, gemini_model
@@ -132,7 +138,134 @@ def print_separator(char="=", length=80):
     print(char * length)
 
 
-async def query_rag(rag: LightRAG, question: str, mode: str = "hybrid", verbose: bool = False):
+def enhance_references_with_pages(answer: str, working_dir: str) -> str:
+    """
+    Post-process the answer to add page numbers to references.
+    
+    Tries to identify which specific chunks were used by matching content,
+    then shows the relevant page numbers.
+    
+    Example:
+        Input:  "[1] data/MA-RAG Multi-Agent.pdf"
+        Output: "[1] data/MA-RAG Multi-Agent.pdf (pages 1, 3, 5-7)"
+    """
+    import json
+    import re
+    from pathlib import Path
+    from collections import defaultdict
+    
+    # Load chunk metadata
+    chunks_file = Path(working_dir) / "kv_store_text_chunks.json"
+    if not chunks_file.exists():
+        return answer
+    
+    try:
+        with open(chunks_file, 'r', encoding='utf-8') as f:
+            chunks = json.load(f)
+        
+        # Build a mapping of file_path to pages, with relevance scoring
+        # Try to identify which chunks were likely used by matching snippets
+        path_to_pages = defaultdict(set)
+        
+        # Extract some distinctive phrases from the answer (excluding references section)
+        answer_body = answer.split('### References')[0] if '### References' in answer else answer
+        answer_snippets = set()
+        
+        # Extract meaningful phrases (10-50 chars) from answer
+        words = answer_body.split()
+        for i in range(len(words) - 3):
+            phrase = ' '.join(words[i:i+4])
+            if len(phrase) >= 15 and len(phrase) <= 60:
+                answer_snippets.add(phrase.lower())
+        
+        # Match chunks to answer content
+        relevant_chunks = {}
+        for chunk_id, chunk_data in chunks.items():
+            content = chunk_data.get('content', '').lower()
+            file_path = chunk_data.get('file_path', '')
+            page = chunk_data.get('page')
+            
+            if not file_path or not page:
+                continue
+            
+            # Check if this chunk's content appears in the answer
+            relevance_score = 0
+            for snippet in answer_snippets:
+                if snippet in content:
+                    relevance_score += 1
+            
+            if relevance_score > 0:
+                relevant_chunks[chunk_id] = {
+                    'file_path': file_path,
+                    'page': page,
+                    'relevance': relevance_score
+                }
+                path_to_pages[file_path].add(page)
+        
+        # Find references in the answer
+        # Pattern 1: "[1] data/Document.pdf" (full path)
+        # Pattern 2: "[1] Document Name" (just name, can be long)
+        reference_pattern1 = r'(\[\d+\])\s+(data/[^\n\r]+?\.(?:pdf|md))'
+        reference_pattern2 = r'(\[\d+\])\s+([A-Z][^\[\]\n\r]{15,}?)(?=\n|$)'
+        
+        def enhance_reference(match):
+            ref_num = match.group(1)  # e.g., "[1]"
+            file_ref = match.group(2).strip()  # e.g., "data/Document.pdf" or "Document Name"
+            
+            # Try to find matching file_path
+            matched_path = None
+            pages = []
+            
+            if file_ref.startswith('data/'):
+                # Direct path match
+                matched_path = file_ref
+                pages = sorted(path_to_pages.get(file_ref, []))
+            else:
+                # Name-based matching - find file containing this name
+                file_ref_clean = file_ref.replace('.pdf', '').replace('.md', '').lower()
+                for path in path_to_pages.keys():
+                    path_name = Path(path).stem.lower()
+                    if file_ref_clean in path_name or path_name in file_ref_clean:
+                        matched_path = path
+                        pages = sorted(path_to_pages.get(path, []))
+                        break
+            
+            # If still no pages found, try fallback
+            if not pages and matched_path:
+                all_pages = set()
+                for chunk_data in chunks.values():
+                    chunk_path = chunk_data.get('file_path', '')
+                    if matched_path in chunk_path or chunk_path in matched_path:
+                        if chunk_data.get('page'):
+                            all_pages.add(chunk_data.get('page'))
+                pages = sorted(all_pages)
+            
+            # Format the reference with pages
+            if matched_path and pages:
+                doc_name = Path(matched_path).name
+                if len(pages) == 1:
+                    return f"{ref_num} {doc_name} (page {pages[0]})"
+                elif len(pages) <= 5:
+                    pages_str = ", ".join(str(p) for p in pages)
+                    return f"{ref_num} {doc_name} (pages {pages_str})"
+                else:
+                    return f"{ref_num} {doc_name} (pages {pages[0]}-{pages[-1]}, {len(pages)} sections)"
+            elif matched_path:
+                return f"{ref_num} {Path(matched_path).name}"
+            else:
+                return match.group(0)  # Return original if no match
+        
+        # Apply both patterns
+        enhanced = re.sub(reference_pattern1, enhance_reference, answer, flags=re.MULTILINE)
+        enhanced = re.sub(reference_pattern2, enhance_reference, enhanced, flags=re.MULTILINE)
+        return enhanced
+    
+    except Exception as e:
+        print(f"⚠️  Could not enhance references: {e}")
+        return answer
+
+
+async def query_rag(rag: LightRAG, question: str, mode: str = "hybrid", verbose: bool = False, enhance_citations: bool = True):
     """Query the RAG system"""
     
     if verbose:
@@ -144,6 +277,10 @@ async def query_rag(rag: LightRAG, question: str, mode: str = "hybrid", verbose:
     # Query with specified mode
     param = QueryParam(mode=mode)
     answer = await rag.aquery(question, param=param)
+    
+    # Enhance references with page numbers if requested
+    if enhance_citations:
+        answer = enhance_references_with_pages(answer, rag.working_dir)
     
     return answer
 

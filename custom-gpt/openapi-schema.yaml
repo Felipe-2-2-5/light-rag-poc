@@ -1,0 +1,316 @@
+openapi: 3.1.0
+info:
+  title: Internal Knowledge Navigator API
+  description: |
+    Hybrid RAG retrieval system that provides structured evidence from vector search 
+    and knowledge graph traversal for the Internal Knowledge Navigator Custom GPT.
+    
+    This API returns pre-selected, finalized evidence that the GPT should use for 
+    reasoning and synthesis without additional retrieval or decision-making.
+  version: 1.0.0
+servers:
+  - url: https://elvie-unending-nonconjugally.ngrok-free.dev
+    description: API server via ngrok tunnel
+
+paths:
+  /retrieve:
+    post:
+      operationId: retrieveEvidence
+      summary: Retrieve structured evidence for a user query
+      description: Performs hybrid RAG retrieval combining vector search and knowledge graph traversal. Returns structured evidence with intent classification, confidence scores, authority levels, and retrieval strategy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: The user's question or search query
+                  example: "What are the requirements in Article 15?"
+                max_results:
+                  type: integer
+                  description: Maximum number of results to return (1-10)
+                  default: 5
+                  minimum: 1
+                  maximum: 10
+                include_graph:
+                  type: boolean
+                  description: Whether to include knowledge graph context
+                  default: true
+      responses:
+        '200':
+          description: Structured evidence retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceResponse'
+        '503':
+          description: System not initialized or unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "System not initialized"
+  
+  /retrieve/simple:
+    post:
+      operationId: retrieveSimple
+      summary: Simplified retrieval returning just text chunks
+      description: |
+        Lightweight endpoint that returns only text chunks without graph context.
+        Useful for quick lookups or testing.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query
+        - name: max_results
+          in: query
+          schema:
+            type: integer
+            default: 5
+            minimum: 1
+            maximum: 10
+          description: Maximum results
+      responses:
+        '200':
+          description: Simple results retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text:
+                          type: string
+                        similarity:
+                          type: number
+                        authority:
+                          type: string
+                  confidence:
+                    type: string
+
+  /health:
+    get:
+      operationId: checkHealth
+      summary: Check API health status
+      description: Returns the operational status of the retrieval system components
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  components:
+                    type: object
+                    properties:
+                      vector_store:
+                        type: boolean
+                      graph_db:
+                        type: boolean
+                      embedding_model:
+                        type: boolean
+
+components:
+  schemas:
+    EvidenceResponse:
+      type: object
+      required:
+        - query
+        - intent
+        - vector_evidence
+        - confidence
+        - confidence_score
+        - retrieval_strategy
+        - evidence_summary
+      properties:
+        query:
+          type: string
+          description: Original user query
+          example: "What are the requirements in Article 15?"
+        
+        intent:
+          $ref: '#/components/schemas/RetrievalIntent'
+        
+        vector_evidence:
+          type: array
+          description: Text chunks from vector similarity search
+          items:
+            $ref: '#/components/schemas/VectorEvidence'
+        
+        graph_evidence:
+          $ref: '#/components/schemas/GraphEvidence'
+          nullable: true
+          description: Knowledge graph context (entities and relationships)
+        
+        confidence:
+          type: string
+          enum: [HIGH, MEDIUM, LOW]
+          description: Overall confidence level
+          example: "HIGH"
+        
+        confidence_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Numeric confidence score
+          example: 0.85
+        
+        retrieval_strategy:
+          type: string
+          enum: [VECTOR_PRIMARY, GRAPH_PRIMARY, HYBRID]
+          description: Retrieval strategy used based on intent
+          example: "HYBRID"
+        
+        evidence_summary:
+          type: string
+          description: Brief summary of evidence retrieved
+          example: "Retrieved 5 relevant chunks with 3 entities and 2 relationships"
+    
+    RetrievalIntent:
+      type: object
+      description: Classified query intent following knowledge_hybrid_index.md taxonomy
+      required:
+        - primary
+        - confidence
+      properties:
+        primary:
+          type: string
+          enum:
+            - FACT_LOOKUP
+            - DECISION_RATIONALE
+            - RELATIONSHIP
+            - PROCEDURE
+            - COMPARISON
+            - TEMPORAL
+            - EXPLANATION
+            - ROOT_CAUSE
+          description: Primary intent type
+          example: "FACT_LOOKUP"
+        secondary:
+          type: string
+          nullable: true
+          description: Secondary intent if applicable
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Intent classification confidence
+          example: 0.8
+    
+    VectorEvidence:
+      type: object
+      description: A text chunk from vector similarity search
+      required:
+        - chunk_id
+        - text
+        - similarity
+        - authority
+      properties:
+        chunk_id:
+          type: string
+          description: Unique chunk identifier (for provenance)
+          example: "vn_law_sample.txt_C42"
+        text:
+          type: string
+          description: Chunk text content
+          example: "Article 15 states that all entities must comply with..."
+        similarity:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Similarity score (0-1)
+          example: 0.87
+        authority:
+          type: string
+          enum: [PRIMARY, SECONDARY, CONTEXTUAL, HISTORICAL]
+          description: Authority level of this evidence
+          example: "PRIMARY"
+    
+    GraphEvidence:
+      type: object
+      description: Knowledge graph context including entities and relationships
+      required:
+        - nodes
+        - edges
+      properties:
+        nodes:
+          type: array
+          description: Graph nodes (entities)
+          items:
+            $ref: '#/components/schemas/GraphNode'
+        edges:
+          type: array
+          description: Graph edges (relationships)
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+        traversal_path:
+          type: string
+          nullable: true
+          description: Human-readable traversal path
+          example: "Article 15 --MENTIONED_WITH--> Compliance Policy --CONSTRAINS--> Data Processing"
+    
+    GraphNode:
+      type: object
+      description: A knowledge graph node representing an entity
+      required:
+        - id
+        - label
+        - type
+      properties:
+        id:
+          type: string
+          description: Entity unique identifier
+          example: "ARTICLE_Điều_15"
+        label:
+          type: string
+          description: Entity label or name
+          example: "Điều 15"
+        type:
+          type: string
+          description: Entity type
+          example: "Article"
+    
+    GraphEdge:
+      type: object
+      description: A knowledge graph edge representing a relationship
+      required:
+        - source
+        - relation
+        - target
+      properties:
+        source:
+          type: string
+          description: Source entity ID
+          example: "ARTICLE_Điều_15"
+        relation:
+          type: string
+          description: Relationship type
+          example: "MENTIONED_WITH"
+        target:
+          type: string
+          description: Target entity ID
+          example: "LAW_12345"

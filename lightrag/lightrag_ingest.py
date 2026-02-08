@@ -48,6 +48,7 @@ def setup_llm_functions():
             )
         
         gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+        gemini_embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
         
         async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             return await gemini_model_complete(
@@ -64,10 +65,13 @@ def setup_llm_functions():
             max_token_size=2048,
         )
         async def embedding_func(texts: list[str]) -> np.ndarray:
+            # Use .func to bypass gemini_embed's decorator (which has embedding_dim=1536)
+            # and apply our own wrapper with embedding_dim=768
             return await gemini_embed.func(
                 texts, 
                 api_key=GEMINI_API_KEY, 
-                model="models/text-embedding-004"
+                model=gemini_embedding_model,
+                embedding_dim=768  # Explicitly set to 768 for compatibility
             )
         
         return llm_model_func, embedding_func, gemini_model
