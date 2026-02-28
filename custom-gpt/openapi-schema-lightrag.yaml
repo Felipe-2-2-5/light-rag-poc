@@ -8,6 +8,13 @@ info:
     
     **ADVANCED ENDPOINT: /retrieve/context-only** - Returns raw chunks (may fail with ResponseTooLargeError)
   version: 2.0.0
+  contact:
+    name: API Support
+    email: support@phamthephong.com
+  termsOfService: https://phamthephong.com/terms
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 
 servers:
   - url: https://elvie-unending-nonconjugally.ngrok-free.dev

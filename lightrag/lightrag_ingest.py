@@ -142,14 +142,28 @@ async def initialize_rag(working_dir: str):
     return rag
 
 
-def read_document(filepath: str, use_ade_fallback: bool = True) -> str:
+def read_document(filepath: str, use_ade_fallback: bool = True, use_rag_anything: bool = False) -> str:
     """
-    Read document using optimized unstructured.io parser with ADE fallback
+    Read document using multimodal RAG-Anything or classic unstructured.io parser
     
-    This uses the custom DocumentParser that:
-    - Tries free Unstructured.io parser first (high quality)
-    - Falls back to ADE API for complex documents
-    - Handles PDFs, images, office docs, and text files
+    Args:
+        filepath: Path to document file
+        use_ade_fallback: Enable ADE API fallback for classic parser
+        use_rag_anything: Use RAG-Anything for multimodal parsing (preserves tables, images, formulas)
+    
+    Parser Options:
+    1. RAG-Anything (use_rag_anything=True):
+       - Preserves table structure, diagrams, formulas
+       - Best for academic papers, technical docs
+       - Requires: pip install raganything
+    
+    2. Classic Unstructured.io (default):
+       - Fast text extraction
+       - ADE fallback for complex PDFs
+       - Best for text-heavy documents
+    
+    Returns:
+        Extracted text content (flattened for non-RAG-Anything mode)
     """
     filepath = Path(filepath)
     
@@ -159,60 +173,123 @@ def read_document(filepath: str, use_ade_fallback: bool = True) -> str:
     # Add src to path to import DocumentParser (go up to project root, then into src)
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     
-    try:
-        from document_parser import DocumentParser
-        
-        # Get ADE API key from environment (optional)
-        ade_api_key = os.getenv("ADE_API_KEY")
-        
-        # Initialize parser with ADE fallback if key is available
-        parser = DocumentParser(
-            ade_api_key=ade_api_key,
-            use_ade_fallback=use_ade_fallback and ade_api_key is not None
-        )
-        
-        print(f"\n📄 Parsing document with optimized parser...")
-        text, metadata = parser.parse_document(str(filepath))
-        
-        # Print parsing info
-        if metadata:
-            parser_name = metadata.get('parser', 'unknown')
-            print(f"✓ Parsed with: {parser_name}")
-            if 'num_elements' in metadata:
-                print(f"  Elements extracted: {metadata['num_elements']}")
-            if 'has_tables' in metadata:
-                print(f"  Contains tables: {metadata['has_tables']}")
-        
-        print(f"✓ Extracted {len(text):,} characters")
-        
-        return text
-        
-    except ImportError as e:
-        print(f"\n⚠️  DocumentParser not available: {e}")
-        print("Falling back to simple text extraction...")
-        
-        # Simple fallback for text files
-        if filepath.suffix.lower() in ['.txt', '.md', '.rst']:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read()
-        else:
-            raise ValueError(
-                f"Cannot parse {filepath.suffix} files without DocumentParser. "
-                "Install dependencies: pip install 'unstructured[pdf]' pillow"
+    # RAG-Anything: Multimodal parsing (preserves structure)
+    if use_rag_anything:
+        try:
+            from raganything import DocumentParser as RAGAnythingParser
+            
+            print(f"\n📄 Parsing with RAG-Anything (multimodal mode)...")
+            print("  ✓ Preserving table structure")
+            print("  ✓ Extracting images and diagrams")
+            print("  ✓ Parsing formulas and equations")
+            
+            parser = RAGAnythingParser()
+            
+            # RAG-Anything returns structured content
+            result = parser.parse(str(filepath))
+            
+            # Extract statistics
+            text_content = result.get('text', '')
+            images = result.get('images', [])
+            tables = result.get('tables', [])
+            formulas = result.get('formulas', [])
+            
+            print(f"\n✓ Multimodal extraction complete:")
+            print(f"  - Text: {len(text_content):,} characters")
+            print(f"  - Images/Diagrams: {len(images)}")
+            print(f"  - Tables: {len(tables)}")
+            print(f"  - Formulas: {len(formulas)}")
+            
+            # For now, return combined text representation
+            # TODO: Enhance LightRAG to support multimodal entities
+            combined_text = text_content
+            
+            # Add table content with structure markers
+            if tables:
+                combined_text += "\n\n[TABLES]\n"
+                for i, table in enumerate(tables, 1):
+                    combined_text += f"\nTable {i}:\n{table.get('content', '')}\n"
+            
+            # Add image descriptions if available
+            if images:
+                combined_text += "\n\n[IMAGES/DIAGRAMS]\n"
+                for i, img in enumerate(images, 1):
+                    desc = img.get('description', 'No description')
+                    combined_text += f"\nFigure {i}: {desc}\n"
+            
+            # Add formulas
+            if formulas:
+                combined_text += "\n\n[FORMULAS]\n"
+                for i, formula in enumerate(formulas, 1):
+                    combined_text += f"\nFormula {i}: {formula.get('latex', '')}\n"
+            
+            return combined_text
+            
+        except ImportError:
+            print("\n⚠️  RAG-Anything not installed!")
+            print("Install with: pip install raganything")
+            print("Falling back to classic parser...\n")
+            use_rag_anything = False
+    
+    # Classic Unstructured.io parser (text-only extraction)
+    if not use_rag_anything:
+        try:
+            from document_parser import DocumentParser
+            
+            # Get ADE API key from environment (optional)
+            ade_api_key = os.getenv("ADE_API_KEY")
+            
+            # Initialize parser with ADE fallback if key is available
+            parser = DocumentParser(
+                ade_api_key=ade_api_key,
+                use_ade_fallback=use_ade_fallback and ade_api_key is not None
             )
+            
+            print(f"\n📄 Parsing document with classic parser (text extraction)...")
+            text, metadata = parser.parse_document(str(filepath))
+            
+            # Print parsing info
+            if metadata:
+                parser_name = metadata.get('parser', 'unknown')
+                print(f"✓ Parsed with: {parser_name}")
+                if 'num_elements' in metadata:
+                    print(f"  Elements extracted: {metadata['num_elements']}")
+                if 'has_tables' in metadata:
+                    print(f"  ⚠️  Contains tables: {metadata['has_tables']} (structure not preserved)")
+                    print(f"     Consider using --use-rag-anything for better table handling")
+            
+            print(f"✓ Extracted {len(text):,} characters")
+            
+            return text
+            
+        except ImportError as e:
+            print(f"\n⚠️  DocumentParser not available: {e}")
+            print("Falling back to simple text extraction...")
+            
+            # Simple fallback for text files
+            if filepath.suffix.lower() in ['.txt', '.md', '.rst']:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                raise ValueError(
+                    f"Cannot parse {filepath.suffix} files without DocumentParser. "
+                    "Install dependencies: pip install 'unstructured[pdf]' pillow"
+                )
 
 
-async def ingest_document(rag: LightRAG, filepath: str, use_ade_fallback: bool = True):
-    """Ingest a document into LightRAG using optimized parser"""
+async def ingest_document(rag: LightRAG, filepath: str, use_ade_fallback: bool = True, use_rag_anything: bool = False):
+    """Ingest a document into LightRAG using classic or multimodal parser"""
+    
+    parser_mode = "Multimodal (RAG-Anything)" if use_rag_anything else "Classic Text Extraction"
     
     print("\n" + "=" * 80)
-    print("Document Ingestion with Optimized Parser")
+    print(f"Document Ingestion - {parser_mode}")
     print("=" * 80)
     
     print(f"\nInput: {filepath}")
     
-    # Parse document with optimized parser (Unstructured.io + ADE fallback)
-    text = read_document(filepath, use_ade_fallback=use_ade_fallback)
+    # Parse document with selected parser
+    text = read_document(filepath, use_ade_fallback=use_ade_fallback, use_rag_anything=use_rag_anything)
     
     print(f"\n📊 Document Statistics:")
     print(f"  Total characters: {len(text):,}")
@@ -344,6 +421,12 @@ async def main():
     )
     
     parser.add_argument(
+        "--use-rag-anything",
+        action="store_true",
+        help="Use RAG-Anything for multimodal parsing (tables, images, formulas). Best for academic PDFs."
+    )
+    
+    parser.add_argument(
         "--save-to-neo4j",
         action="store_true",
         default=True,
@@ -375,9 +458,14 @@ async def main():
         # Initialize LightRAG
         rag = await initialize_rag(str(working_dir))
         
-        # Ingest document with optimized parser
+        # Ingest document with selected parser (classic or multimodal)
         use_ade = not args.no_ade_fallback
-        char_count = await ingest_document(rag, args.input, use_ade_fallback=use_ade)
+        char_count = await ingest_document(
+            rag, 
+            args.input, 
+            use_ade_fallback=use_ade,
+            use_rag_anything=args.use_rag_anything
+        )
         
         # Print statistics
         print_statistics(str(working_dir))

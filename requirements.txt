@@ -37,3 +37,9 @@ unstructured-inference>=0.7.0
 # Document Parsing - ADE Fallback (Optional)
 # landingai==0.3.0   # Uncomment to enable ADE API fallback
 
+# Document Parsing - RAG-Anything for Multimodal Support (Optional but RECOMMENDED for academic PDFs)
+# Preserves table structure, extracts images/diagrams, parses formulas
+# Install with: pip install raganything
+# Uncomment below to enable multimodal parsing:
+raganything>=0.1.0
+

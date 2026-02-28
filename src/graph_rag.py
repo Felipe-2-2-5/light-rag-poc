@@ -130,7 +130,8 @@ class GraphRAGRetriever(BaseRetriever):
             enriched_text = text
             if graph_context:
                 enriched_text = f"{text}\n\n[Graph Context]\n{graph_context}"
-            Get entity/relation count for confidence calculation
+            
+            # Get entity/relation count for confidence calculation
             entity_count = 0
             relation_count = 0
             if chunk_id and graph_context:
@@ -156,8 +157,7 @@ class GraphRAGRetriever(BaseRetriever):
                     text=text,
                     query=query,
                     has_graph_context=bool(graph_context)
-                    has_graph_context=bool(graph_context)
-            )
+                )
             
             # Create LangChain Document
             doc = Document(
@@ -220,25 +220,7 @@ class GraphRAGRetriever(BaseRetriever):
         matching_terms = sum(1 for term in query_terms if term in text_lower)
         factors['query_coverage'] = matching_terms / len(query_terms) if query_terms else 0.0
         
-        # Calentity_relation_counts(self, chunk_id: str) -> Tuple[int, int]:
-        """Get count of entities and relations for a chunk"""
-        cypher_query = """
-        MATCH (c:Chunk {chunk_id: $chunk_id})<-[:MENTIONED_IN]-(e:Entity)
-        OPTIONAL MATCH (e)-[r:REL]->(e2:Entity)
-        RETURN count(DISTINCT e) as entity_count, count(DISTINCT r) as relation_count
-        """
-        
-        try:
-            with self.graph_driver.session() as session:
-                result = session.run(cypher_query, chunk_id=chunk_id)
-                record = result.single()
-                if record:
-                    return record["entity_count"], record["relation_count"]
-        except Exception:
-            pass
-        return 0, 0
-    
-    def _get_culate weighted confidence
+        # Calculate weighted confidence
         weights = {
             'similarity': 0.40,
             'graph_connectivity': 0.20,
@@ -258,6 +240,24 @@ class GraphRAGRetriever(BaseRetriever):
         }
         
         return overall_confidence, confidence_breakdown
+    
+    def _get_entity_relation_counts(self, chunk_id: str) -> Tuple[int, int]:
+        """Get count of entities and relations for a chunk"""
+        cypher_query = """
+        MATCH (c:Chunk {chunk_id: $chunk_id})<-[:MENTIONED_IN]-(e:Entity)
+        OPTIONAL MATCH (e)-[r:REL]->(e2:Entity)
+        RETURN count(DISTINCT e) as entity_count, count(DISTINCT r) as relation_count
+        """
+        
+        try:
+            with self.graph_driver.session() as session:
+                result = session.run(cypher_query, chunk_id=chunk_id)
+                record = result.single()
+                if record:
+                    return record["entity_count"], record["relation_count"]
+        except Exception:
+            pass
+        return 0, 0
     
     def _get_graph_context(self, chunk_id: str) -> str:
         """Query Neo4j for entities and relationships related to a chunk"""
@@ -342,18 +342,13 @@ class GraphRAG:
             top_k: Number of chunks to retrieve
             similarity_threshold: Minimum similarity score
             expand_graph: Whether to include graph context
-        ""Initialize confidence scorer
-        self.confidence_scorer = ConfidenceScorer()
+        """
+        # Load embedding model
+        print(f"Loading embedding model: {embedding_model}")
+        self.embedding_model = SentenceTransformer(embedding_model)
+        self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
         
-        # Create custom retriever
-        self.retriever = GraphRAGRetriever(
-            vector_store=self.vector_store,
-            graph_driver=self.graph_driver,
-            embedding_model=self.embedding_model,
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-            expand_graph=expand_graph,
-            confidence_scorer=self.confidence_scorer
+        # Load vector store
         print(f"Loading vector store from outputs/")
         self.vector_store = FaissStore(dim=self.embedding_dim)
         
@@ -385,6 +380,9 @@ class GraphRAG:
         else:
             raise ValueError(f"Unsupported LLM provider: {llm_provider}. Use 'openai' or 'gemini'")
         
+        # Initialize confidence scorer
+        self.confidence_scorer = ConfidenceScorer()
+        
         # Create custom retriever
         self.retriever = GraphRAGRetriever(
             vector_store=self.vector_store,
@@ -392,7 +390,8 @@ class GraphRAG:
             embedding_model=self.embedding_model,
             top_k=top_k,
             similarity_threshold=similarity_threshold,
-            expand_graph=expand_graph
+            expand_graph=expand_graph,
+            confidence_scorer=self.confidence_scorer
         )
         
         # Create RAG chain

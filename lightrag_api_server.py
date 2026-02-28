@@ -29,6 +29,17 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.gemini import gemini_model_complete, gemini_embed
 from lightrag.utils import wrap_embedding_func_with_attrs
 
+# Import the reference enhancement function
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "lightrag"))
+try:
+    from lightrag_query import enhance_references_with_pages
+except ImportError:
+    # If import fails, we'll define a minimal version inline
+    def enhance_references_with_pages(answer: str, working_dir: str) -> str:
+        """Fallback - return answer as-is if import fails"""
+        return answer
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Internal Knowledge Navigator API (LightRAG)",
@@ -131,6 +142,7 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
     """
     Extract citation information from LightRAG's answer with references.
     Parses the ### References section and extracts document names and page ranges.
+    Also looks up page information from storage when not in references.
     """
     import json
     import re
@@ -138,6 +150,21 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
     citations = []
     
     try:
+        # Load chunk and document storage for page lookup
+        chunks_file = Path(working_dir) / "kv_store_text_chunks.json"
+        docs_file = Path(working_dir) / "kv_store_full_docs.json"
+        
+        chunks_data = {}
+        docs_data = {}
+        
+        if chunks_file.exists():
+            with open(chunks_file, 'r', encoding='utf-8') as f:
+                chunks_data = json.load(f)
+        
+        if docs_file.exists():
+            with open(docs_file, 'r', encoding='utf-8') as f:
+                docs_data = json.load(f)
+        
         # Parse references from LightRAG's answer format
         # Look for ### References section
         if "### References" in context or "## References" in context:
@@ -147,19 +174,28 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
                 references_text = ref_match.group(1)
                 
                 # Parse individual references
-                # Format: - [1] Title or - [1] path/to/file.pdf (pages X-Y)
-                ref_pattern = r'-\s*\[(\d+)\]\s*(.+?)(?:\(pages?\s*(\d+)(?:-(\d+))?\))?$'
+                # Format variations:
+                #   - [1] Title 
+                #   - [1] path/to/file.pdf 
+                #   - [1] file.pdf (page 5)
+                #   - [1] file.pdf (pages 1, 3, 5-7)
+                #   - [1] file.pdf (pages 1-10)
+                ref_pattern = r'-\s*\[(\d+)\]\s*(.+?)(?:\s*\((pages?)\s+([0-9,\s-]+)\))?$'
                 
                 for match in re.finditer(ref_pattern, references_text, re.MULTILINE):
                     ref_num = match.group(1)
                     doc_info = match.group(2).strip()
-                    start_page = match.group(3)
-                    end_page = match.group(4)
+                    page_keyword = match.group(3)  # 'page' or 'pages'
+                    page_range_text = match.group(4)  # e.g., "5" or "1, 3, 5-7" or "1-10"
                     
                     # Extract document name (could be a path or title)
-                    # If it looks like a path, get the filename
+                    doc_name = doc_info
+                    file_path_hint = None
+                    
                     if '/' in doc_info or '\\' in doc_info:
+                        # It's a path
                         doc_name = Path(doc_info).name
+                        file_path_hint = doc_info
                     else:
                         # It's a title - keep first 80 chars
                         doc_name = doc_info[:80]
@@ -168,12 +204,54 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
                     page_num = None
                     location = f"Reference [{ref_num}]"
                     
-                    if start_page:
-                        page_num = int(start_page)
-                        if end_page:
-                            location = f"pages {start_page}-{end_page}"
+                    if page_range_text:
+                        # Parse page numbers from various formats:
+                        # "5" -> page 5
+                        # "1, 3, 5" -> pages 1, 3, 5
+                        # "1-10" -> pages 1-10
+                        # "1, 3, 5-7" -> pages 1, 3, 5-7
+                        
+                        page_range_text = page_range_text.strip()
+                        
+                        # Extract first page number for the page field
+                        first_page_match = re.search(r'(\d+)', page_range_text)
+                        if first_page_match:
+                            page_num = int(first_page_match.group(1))
+                        
+                        # Format location string
+                        if ',' in page_range_text or len(page_range_text) > 10:
+                            # Multiple pages or complex range
+                            location = f"pages {page_range_text}"
+                        elif '-' in page_range_text:
+                            # Simple range like "1-10"
+                            location = f"pages {page_range_text}"
                         else:
-                            location = f"page {start_page}"
+                            # Single page
+                            location = f"page {page_range_text}"
+                    else:
+                        # Try to look up page info from storage by matching document name/title
+                        for doc_id, doc_data in docs_data.items():
+                            doc_file_path = doc_data.get('file_path', '')
+                            doc_content = doc_data.get('content', '')
+                            
+                            # Check if this document matches
+                            matches = False
+                            if file_path_hint and file_path_hint in doc_file_path:
+                                matches = True
+                            elif doc_name in doc_content[:200]:  # Check if title appears in doc content
+                                matches = True
+                            elif doc_file_path != 'unknown_source' and Path(doc_file_path).stem in doc_name:
+                                matches = True
+                            
+                            if matches:
+                                # Count chunks for this document to estimate page range
+                                doc_chunks = [c for c in chunks_data.values() if c.get('full_doc_id') == doc_id]
+                                if doc_chunks:
+                                    # Estimate pages: ~2-3 chunks per page
+                                    estimated_pages = max(1, len(doc_chunks) // 2)
+                                    page_num = 1
+                                    location = f"pages 1-{estimated_pages}"
+                                break
                     
                     citations.append(Citation(
                         document=doc_name,
@@ -183,24 +261,10 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
                     ))
         
         # Fallback: If no references section, try to extract from storage
-        if not citations:
-            chunks_file = Path(working_dir) / "kv_store_text_chunks.json"
-            docs_file = Path(working_dir) / "kv_store_full_docs.json"
-            
-            if not chunks_file.exists():
-                return citations
-            
-            with open(chunks_file, 'r', encoding='utf-8') as f:
-                chunks = json.load(f)
-            
-            docs = {}
-            if docs_file.exists():
-                with open(docs_file, 'r', encoding='utf-8') as f:
-                    docs = json.load(f)
-            
+        if not citations and chunks_data:
             # Find chunks that appear in the context
             chunk_ids = []
-            for chunk_id, chunk_data in chunks.items():
+            for chunk_id, chunk_data in chunks_data.items():
                 content_sample = chunk_data.get('content', '')[:150]
                 if content_sample and content_sample in context:
                     chunk_ids.append(chunk_id)
@@ -208,7 +272,7 @@ def extract_citations_from_context(context: str, working_dir: str) -> List['Cita
             # Build citations from found chunks
             seen_docs = set()
             for chunk_id in chunk_ids[:5]:
-                chunk_data = chunks.get(chunk_id, {})
+                chunk_data = chunks_data.get(chunk_id, {})
                 if not chunk_data:
                     continue
                 
@@ -417,6 +481,10 @@ async def retrieve_and_answer(request: QueryRequest):
         if not answer:
             raise HTTPException(status_code=500, detail="Query returned no results")
         
+        # Enhance references with page numbers BEFORE extracting citations
+        working_dir = os.getenv("LIGHTRAG_WORKING_DIR", "./lightrag_storage")
+        answer = enhance_references_with_pages(answer, working_dir)
+        
         # Determine confidence based on answer length and content
         answer_lower = answer.lower()
         if len(answer) > 200 and "reference" in answer_lower:
@@ -426,8 +494,7 @@ async def retrieve_and_answer(request: QueryRequest):
         else:
             confidence = "LOW"
         
-        # Extract citations from the answer context
-        working_dir = os.getenv("LIGHTRAG_WORKING_DIR", "./lightrag_storage")
+        # Extract citations from the answer context (now with page numbers)
         citations = extract_citations_from_context(answer, working_dir)
         
         # Format evidence description with citations

@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-Graph RAG CLI - Interactive command-line interface for querying the Graph RAG system
+Traditional/Custom Graph RAG CLI - FOR COMPARISON WITH LIGHTRAG
+
+This is the ORIGINAL custom Graph RAG implementation for showcasing
+the enhancement when applying official LightRAG.
+
+Use this to compare:
+- Traditional RAG: python lightrag/query_rag.py --interactive
+- LightRAG (new): python lightrag/lightrag_query.py --interactive
 
 Usage:
-    python query_rag.py "What is LightRAG?"
-    python query_rag.py --interactive
-    python query_rag.py --search "knowledge graph" --top-k 5
+    python lightrag/query_rag.py "What is LightRAG?"
+    python lightrag/query_rag.py --interactive
+    python lightrag/query_rag.py --search "knowledge graph" --top-k 5
 """
 
 import sys
@@ -13,7 +20,7 @@ import argparse
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from graph_rag import GraphRAG
 import json
@@ -21,6 +28,14 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+print("\n" + "=" * 80)
+print("🔵 TRADITIONAL/CUSTOM GRAPH RAG (Original Implementation)")
+print("=" * 80)
+print("This is the custom Graph RAG for comparison purposes.")
+print("For the enhanced LightRAG version, use: python lightrag/lightrag_query.py")
+print("=" * 80 + "\n")
+
 
 def print_separator(char="=", length=80):
     """Print a separator line"""
