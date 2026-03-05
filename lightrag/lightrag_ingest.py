@@ -17,6 +17,7 @@ import asyncio
 import nest_asyncio
 from pathlib import Path
 from dotenv import load_dotenv
+import logging
 
 # Enable nested event loops (needed for Jupyter/interactive environments)
 nest_asyncio.apply()
@@ -24,122 +25,14 @@ nest_asyncio.apply()
 # Load environment variables
 load_dotenv()
 
-from lightrag import LightRAG, QueryParam
-from lightrag.llm.gemini import gemini_model_complete, gemini_embed
-from lightrag.utils import wrap_embedding_func_with_attrs
-import numpy as np
-import logging
+# Shared LLM setup and logging (avoids duplicating provider wiring across scripts)
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from llm_setup import setup_llm_functions, initialize_rag  # noqa: E402
+from logging_config import configure_logging  # noqa: E402
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+from lightrag import LightRAG
 
-
-def setup_llm_functions():
-    """Setup LLM and embedding functions based on environment configuration"""
-    
-    llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    
-    if llm_provider == "gemini":
-        GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
-        if not GEMINI_API_KEY:
-            raise ValueError(
-                "GOOGLE_API_KEY not set in .env file. "
-                "Get your key from: https://aistudio.google.com/app/apikey"
-            )
-        
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
-        gemini_embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
-        
-        async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            return await gemini_model_complete(
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=GEMINI_API_KEY,
-                model_name=gemini_model,
-                **kwargs,
-            )
-        
-        @wrap_embedding_func_with_attrs(
-            embedding_dim=768,
-            max_token_size=2048,
-        )
-        async def embedding_func(texts: list[str]) -> np.ndarray:
-            # Use .func to bypass gemini_embed's decorator (which has embedding_dim=1536)
-            # and apply our own wrapper with embedding_dim=768
-            return await gemini_embed.func(
-                texts, 
-                api_key=GEMINI_API_KEY, 
-                model=gemini_embedding_model,
-                embedding_dim=768  # Explicitly set to 768 for compatibility
-            )
-        
-        return llm_model_func, embedding_func, gemini_model
-    
-    elif llm_provider == "openai":
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-        if not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY not set in .env file")
-        
-        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embedding
-        
-        async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            return await openai_complete_if_cache(
-                openai_model,
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=OPENAI_API_KEY,
-                **kwargs,
-            )
-        
-        @wrap_embedding_func_with_attrs(
-            embedding_dim=1536,
-            max_token_size=8192,
-        )
-        async def embedding_func(texts: list[str]) -> np.ndarray:
-            return await openai_embedding(
-                texts,
-                model="text-embedding-3-small",
-                api_key=OPENAI_API_KEY,
-            )
-        
-        return llm_model_func, embedding_func, openai_model
-    
-    else:
-        raise ValueError(f"Unsupported LLM provider: {llm_provider}. Use 'gemini' or 'openai'")
-
-
-async def initialize_rag(working_dir: str):
-    """Initialize LightRAG with proper configuration"""
-    
-    print("=" * 80)
-    print("LightRAG Initialization")
-    print("=" * 80)
-    
-    llm_model_func, embedding_func, model_name = setup_llm_functions()
-    
-    print(f"\n✓ LLM Model: {model_name}")
-    print(f"✓ Working Directory: {working_dir}")
-    
-    rag = LightRAG(
-        working_dir=working_dir,
-        llm_model_func=llm_model_func,
-        embedding_func=embedding_func,
-        llm_model_name=model_name,
-        # Chunking configuration - larger chunks for better context
-        chunk_token_size=1200,  # Increased from default 200 tokens
-        chunk_overlap_token_size=100,  # Overlap between chunks
-    )
-    
-    # Initialize storage backends
-    print("\n⏳ Initializing storage backends...")
-    await rag.initialize_storages()
-    print("✓ Storage initialized")
-    
-    return rag
+configure_logging()
 
 
 def read_document(filepath: str, use_ade_fallback: bool = True, use_rag_anything: bool = False) -> str:
@@ -455,8 +348,13 @@ async def main():
     working_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Initialize LightRAG
-        rag = await initialize_rag(str(working_dir))
+        # Initialize LightRAG with larger chunks for better ingestion context
+        rag = await initialize_rag(
+            str(working_dir),
+            chunk_token_size=1200,
+            chunk_overlap_token_size=100,
+            verbose=True,
+        )
         
         # Ingest document with selected parser (classic or multimodal)
         use_ade = not args.no_ade_fallback

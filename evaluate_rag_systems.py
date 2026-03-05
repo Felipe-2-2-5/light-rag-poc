@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Activate the virtual environment before running:
-#   source ~/.lightRAG_env/bin/activate
 """
 RAG Systems Evaluation Tool
 
