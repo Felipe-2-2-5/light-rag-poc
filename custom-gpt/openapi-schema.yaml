@@ -105,6 +105,38 @@ paths:
                   confidence:
                     type: string
 
+  /ingest/qa:
+    post:
+      operationId: ingestQA
+      summary: Ingest a Q&A pair into the knowledge base
+      description: |
+        Stores a question-answer pair from the current conversation into the
+        vector store and knowledge graph, enabling rapid adaptation to new
+        information. Call this endpoint after providing a HIGH or MEDIUM
+        confidence answer so future queries can benefit from the interaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QAIngestRequest'
+      responses:
+        '200':
+          description: Q&A pair ingested or deduplicated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QAIngestResponse'
+        '503':
+          description: System not initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+
   /health:
     get:
       operationId: checkHealth
@@ -314,3 +346,52 @@ components:
           type: string
           description: Target entity ID
           example: "LAW_12345"
+
+    QAIngestRequest:
+      type: object
+      description: A question-answer pair to ingest into the knowledge base
+      required:
+        - question
+        - answer
+      properties:
+        question:
+          type: string
+          description: The user's question
+          example: "What are the data retention requirements?"
+        answer:
+          type: string
+          description: The answer provided by the Custom GPT
+          example: "Data must be retained for at least 5 years according to Article 20."
+        source:
+          type: string
+          description: Source identifier for provenance tracking
+          default: "chatgpt_qa"
+          example: "chatgpt_qa"
+        tags:
+          type: array
+          description: Optional tags for categorization
+          items:
+            type: string
+          example: ["data-retention", "article-20"]
+
+    QAIngestResponse:
+      type: object
+      description: Result of a Q&A ingestion request
+      required:
+        - chunk_id
+        - status
+        - message
+      properties:
+        chunk_id:
+          type: string
+          description: Unique identifier assigned to the ingested Q&A chunk
+          example: "qa_chatgpt_qa_a1b2c3d4e5f6"
+        status:
+          type: string
+          enum: [ingested, duplicate]
+          description: Whether the pair was newly ingested or was already present
+          example: "ingested"
+        message:
+          type: string
+          description: Human-readable status message
+          example: "Q&A pair ingested successfully (chunk_id: qa_chatgpt_qa_a1b2c3d4e5f6)"
