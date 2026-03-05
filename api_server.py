@@ -12,6 +12,7 @@ It follows the evidence contract defined in:
 
 import os
 import sys
+import hashlib
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from sentence_transformers import SentenceTransformer
+import numpy as np
 
 # Load environment
 load_dotenv()
@@ -52,11 +54,15 @@ _vector_store = None
 _graph_driver = None
 _embedding_model = None
 _confidence_scorer = None
+_qa_chunk_ids: set = set()  # Fast deduplication index for Q&A ingestion
+
+# Neo4j property size limit for text content
+NEO4J_TEXT_MAX_LENGTH = 2000
 
 
 def initialize_system():
     """Initialize retrieval system components"""
-    global _vector_store, _graph_driver, _embedding_model, _confidence_scorer
+    global _vector_store, _graph_driver, _embedding_model, _confidence_scorer, _qa_chunk_ids
     
     if _vector_store is None:
         print("🔄 Initializing retrieval system...")
@@ -70,6 +76,14 @@ def initialize_system():
         dim = _embedding_model.get_sentence_embedding_dimension()
         _vector_store = FaissStore(dim)
         _vector_store.load()
+
+        # Populate deduplication index from existing metadata
+        _qa_chunk_ids = {
+            m.get("chunk_id")
+            for m in _vector_store.meta.values()
+            if m and m.get("type") == "qa_pair"
+        }
+        print(f"📋 Loaded {len(_qa_chunk_ids)} existing Q&A chunk IDs into dedup index")
         
         # Connect to Neo4j
         print(f"🔗 Connecting to Neo4j at: {NEO4J_URI}")
@@ -138,6 +152,21 @@ class QueryRequest(BaseModel):
     query: str = Field(description="User's question")
     max_results: int = Field(default=5, ge=1, le=10, description="Maximum results to return")
     include_graph: bool = Field(default=True, description="Include graph traversal")
+
+
+class QAIngestRequest(BaseModel):
+    """Q&A pair to ingest into the knowledge base"""
+    question: str = Field(description="The user's question")
+    answer: str = Field(description="The answer provided by the Custom GPT")
+    source: str = Field(default="chatgpt_qa", description="Source identifier for provenance")
+    tags: List[str] = Field(default_factory=list, description="Optional tags for categorization")
+
+
+class QAIngestResponse(BaseModel):
+    """Response after ingesting a Q&A pair"""
+    chunk_id: str = Field(description="Unique ID assigned to the ingested Q&A chunk")
+    status: str = Field(description="Status: 'ingested' or 'duplicate'")
+    message: str = Field(description="Human-readable status message")
 
 
 # Intent classification logic
@@ -458,6 +487,79 @@ async def retrieve_simple(
         ],
         "confidence": response.confidence
     }
+
+
+@app.post("/ingest/qa", response_model=QAIngestResponse, tags=["Ingestion"])
+async def ingest_qa(request: QAIngestRequest):
+    """
+    Ingest a Q&A pair into the knowledge base for rapid adaptation.
+
+    This endpoint allows the Custom GPT to submit question-answer pairs
+    from user interactions so that the knowledge base grows dynamically.
+    The Q&A text is embedded and stored in the FAISS vector store (and
+    optionally as a Chunk node in Neo4j), making it immediately available
+    for future /retrieve queries.
+
+    A deterministic chunk_id derived from the question content prevents
+    exact-duplicate entries.
+    """
+    if not all([_vector_store, _embedding_model]):
+        raise HTTPException(status_code=503, detail="System not initialized")
+
+    # Format Q&A as a retrievable text chunk
+    qa_text = f"Q: {request.question}\nA: {request.answer}"
+
+    # Deterministic chunk_id — same question always maps to the same id.
+    # SHA-256 is used to minimise collision risk across a growing knowledge base.
+    question_hash = hashlib.sha256(request.question.strip().lower().encode()).hexdigest()[:12]
+    chunk_id = f"qa_{request.source}_{question_hash}"
+
+    # O(1) duplicate check via the in-memory deduplication index
+    if chunk_id in _qa_chunk_ids:
+        return QAIngestResponse(
+            chunk_id=chunk_id,
+            status="duplicate",
+            message=f"Q&A pair already exists in the knowledge base (chunk_id: {chunk_id})"
+        )
+
+    # Embed and store in FAISS
+    embedding = _embedding_model.encode([qa_text])[0]
+    metadata = {
+        "chunk_id": chunk_id,
+        "text": qa_text,
+        "source": request.source,
+        "tags": request.tags,
+        "type": "qa_pair",
+        "question": request.question,
+        "answer": request.answer,
+    }
+    _vector_store.add(np.array([embedding]), [metadata])
+    _qa_chunk_ids.add(chunk_id)
+    print(f"✅ Ingested Q&A pair: {chunk_id}")
+
+    # Persist Q&A chunk to Neo4j when available.
+    # Text is truncated to NEO4J_TEXT_MAX_LENGTH to stay within Neo4j's
+    # recommended property size for efficient storage and indexing.
+    if _graph_driver:
+        try:
+            with _graph_driver.session() as session:
+                session.run(
+                    """
+                    MERGE (c:Chunk {chunk_id: $chunk_id})
+                    SET c.text = $text, c.doc_id = $source, c.type = 'qa_pair'
+                    """,
+                    chunk_id=chunk_id,
+                    text=qa_text[:NEO4J_TEXT_MAX_LENGTH],
+                    source=request.source,
+                )
+        except Exception as e:
+            print(f"⚠️  Failed to store Q&A in Neo4j: {e}")
+
+    return QAIngestResponse(
+        chunk_id=chunk_id,
+        status="ingested",
+        message=f"Q&A pair ingested successfully (chunk_id: {chunk_id})"
+    )
 
 
 if __name__ == "__main__":

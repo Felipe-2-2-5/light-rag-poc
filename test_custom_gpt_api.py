@@ -116,6 +116,75 @@ def test_simple_retrieve(base_url: str) -> bool:
         return False
 
 
+def test_ingest_qa(base_url: str) -> bool:
+    """Test Q&A ingestion endpoint"""
+    print("\n🔍 Testing /ingest/qa endpoint...")
+
+    question = "What is the data retention period?"
+    answer = "Data must be retained for at least 5 years according to Article 20."
+    payload = {
+        "question": question,
+        "answer": answer,
+        "source": "chatgpt_qa",
+        "tags": ["test", "data-retention"],
+    }
+
+    try:
+        # First call — should ingest
+        response = requests.post(
+            f"{base_url}/ingest/qa",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        checks = {
+            "chunk_id present": "chunk_id" in data and data["chunk_id"].startswith("qa_"),
+            "status is ingested or duplicate": data.get("status") in ["ingested", "duplicate"],
+            "message present": bool(data.get("message")),
+        }
+
+        print(f"\n📋 Ingest Q&A Checks (first call — status: {data.get('status')}):")
+        all_passed = True
+        for check, passed in checks.items():
+            icon = "✅" if passed else "❌"
+            print(f"   {icon} {check}")
+            if not passed:
+                all_passed = False
+
+        if not all_passed:
+            print("\n⚠️  Some checks failed on first ingest call")
+            return False
+
+        # Second call with the same question — should be deduplicated
+        response2 = requests.post(
+            f"{base_url}/ingest/qa",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        response2.raise_for_status()
+        data2 = response2.json()
+
+        dedup_ok = data2.get("status") == "duplicate"
+        icon = "✅" if dedup_ok else "❌"
+        print(f"   {icon} Duplicate Q&A is deduplicated (status: {data2.get('status')})")
+        if not dedup_ok:
+            all_passed = False
+
+        if all_passed:
+            print("\n✅ Q&A ingestion endpoint working correctly!")
+        return all_passed
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Ingest Q&A test failed: {e}")
+        if hasattr(e, "response") and e.response is not None:
+            print(f"   Response: {e.response.text}")
+        return False
+
+
 def test_evidence_contract(base_url: str) -> bool:
     """Test that response matches the evidence contract"""
     print("\n🔍 Testing Evidence Contract Compliance...")
@@ -214,6 +283,7 @@ def main():
     results['retrieve'] = test_retrieve(base_url, args.query)
     results['simple'] = test_simple_retrieve(base_url)
     results['contract'] = test_evidence_contract(base_url)
+    results['ingest_qa'] = test_ingest_qa(base_url)
     
     # Summary
     print("\n" + "=" * 70)
