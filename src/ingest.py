@@ -9,8 +9,10 @@ from document_parser import DocumentParser
 from neo4j import GraphDatabase
 import logging
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
 
 def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     words = text.split()

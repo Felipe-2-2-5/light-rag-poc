@@ -26,11 +26,12 @@ nest_asyncio.apply()
 load_dotenv()
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.gemini import gemini_model_complete, gemini_embed
-from lightrag.utils import wrap_embedding_func_with_attrs
+
+# Shared LLM setup – single authoritative implementation
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+from llm_setup import setup_llm_functions  # noqa: E402
 
 # Import the reference enhancement function
-import sys
 sys.path.insert(0, str(Path(__file__).parent / "lightrag"))
 try:
     from lightrag_query import enhance_references_with_pages
@@ -58,84 +59,6 @@ app.add_middleware(
 
 # Global LightRAG instance
 _rag_instance = None
-
-
-def setup_llm_functions():
-    """Setup LLM and embedding functions based on environment configuration"""
-    
-    llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    
-    if llm_provider == "gemini":
-        GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
-        if not GEMINI_API_KEY:
-            raise ValueError(
-                "GOOGLE_API_KEY not set in .env file. "
-                "Get your key from: https://aistudio.google.com/app/apikey"
-            )
-        
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        gemini_embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
-        
-        async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            return await gemini_model_complete(
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=GEMINI_API_KEY,
-                model_name=gemini_model,
-                **kwargs,
-            )
-        
-        @wrap_embedding_func_with_attrs(
-            embedding_dim=768,
-            max_token_size=2048,
-        )
-        async def embedding_func(texts: list[str]) -> np.ndarray:
-            # Use .func to bypass gemini_embed's decorator (which has embedding_dim=1536)
-            # and apply our own wrapper with embedding_dim=768
-            return await gemini_embed.func(
-                texts, 
-                api_key=GEMINI_API_KEY, 
-                model=gemini_embedding_model,
-                embedding_dim=768  # Explicitly set to 768 for compatibility
-            )
-        
-        return llm_model_func, embedding_func, gemini_model
-    
-    elif llm_provider == "openai":
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-        if not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY not set in .env file")
-        
-        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embedding
-        
-        async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            return await openai_complete_if_cache(
-                openai_model,
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=OPENAI_API_KEY,
-                **kwargs,
-            )
-        
-        @wrap_embedding_func_with_attrs(
-            embedding_dim=1536,
-            max_token_size=8192,
-        )
-        async def embedding_func(texts: list[str]) -> np.ndarray:
-            return await openai_embedding(
-                texts,
-                model="text-embedding-3-small",
-                api_key=OPENAI_API_KEY,
-            )
-        
-        return llm_model_func, embedding_func, openai_model
-    
-    else:
-        raise ValueError(f"Unsupported LLM provider: {llm_provider}. Use 'gemini' or 'openai'")
 
 
 def extract_citations_from_context(context: str, working_dir: str) -> List['Citation']:

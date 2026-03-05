@@ -1,3 +1,11 @@
+"""
+REFERENCE ONLY – standalone Neo4j population script (early prototype).
+
+This file is superseded by the ``build_knowledge_graph`` function in
+``src/ingest.py``, which is integrated into the full ingestion pipeline.
+
+Kept here for historical reference; not imported anywhere.
+"""
 from neo4j import GraphDatabase
 import json
 import os

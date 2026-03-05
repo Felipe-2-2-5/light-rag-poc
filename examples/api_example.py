@@ -2,9 +2,9 @@
 Example FastAPI implementation for hybrid search (KG + Vector)
 This demonstrates how to combine Neo4j graph queries with FAISS vector search.
 
-To run:
+To run (from the project root):
     pip install fastapi uvicorn
-    uvicorn api_example:app --reload
+    uvicorn examples.api_example:app --reload
     
 Access docs at: http://localhost:8000/docs
 """
